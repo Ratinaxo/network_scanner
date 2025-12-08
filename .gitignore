@@ -1,0 +1,19 @@
+# 1. Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 2. Datos y Logs de aplicación
+data/
+logs/
+scans/
+
+# 3. Archivos específicos por si acaso se generan fuera de carpeta
+*.db
+*.log
+*.txt
+
+# 4. Entornos virtuales
+venv/
+env/
+.env
