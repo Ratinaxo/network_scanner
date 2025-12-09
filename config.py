@@ -2,7 +2,7 @@ import os
 
 # --- Configuración de Red ---
 # Si quieres fijar manualmente un rango (ej: "192.168.1.0/24"):
-FORCE_SUBNET = None
+FORCE_SUBNET = "192.168.4.0/24"
 
 # --- Rutas Dinámicas ---
 # Estas variables se inicializan en main.py al arrancar,
