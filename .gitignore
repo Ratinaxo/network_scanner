@@ -17,3 +17,7 @@ scans/
 venv/
 env/
 .env
+
+# 5. Archivos extra
+test_network_tracker.py
+audit.py
