@@ -122,6 +122,23 @@ class DeviceRepository:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (device_id, scan_id, p["port"], p["protocol"], p["service"], p["product"], p["version"]))
 
+    def save_scripts_data(self, device_id: int, scan_id: int, host_data: dict):
+        if "scripts" not in host_data:
+            return
+            
+        for s in host_data["scripts"]:
+            # Guardamos el ID del script y su salida de texto
+            self.cursor.execute("""
+                INSERT INTO fingerprint_scripts (device_id, scan_id, script_id, output)
+                VALUES (?, ?, ?, ?)
+            """, (device_id, scan_id, s["id"], s["output"]))
+
+    # También necesitamos un método para LEER esto en el clasificador
+    def get_scripts_output(self, device_id: int) -> str:
+        """Concatena toda la salida de scripts conocida para un dispositivo."""
+        self.cursor.execute("SELECT output FROM fingerprint_scripts WHERE device_id = ?", (device_id,))
+        rows = self.cursor.fetchall()
+        return " ".join([r[0] for r in rows if r[0]]).lower()
     # --- Métodos para Heurística y Análisis ---
     
     def get_all_device_ids(self) -> List[int]:

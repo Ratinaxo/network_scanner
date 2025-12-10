@@ -15,7 +15,8 @@ def parse_nmap_xml(xml_text: str) -> List[Dict[str, Any]]:
         addr_mac = None
         vendor = None
         hostname = None
-        
+        scripts_results = []
+
         status = host.find("status")
         state = status.get("state") if status is not None else None
 
@@ -43,6 +44,14 @@ def parse_nmap_xml(xml_text: str) -> List[Dict[str, Any]]:
                     "accuracy": int(osmatch.get("accuracy") or 0)
                 })
         
+        hostscript = host.find("hostscript")
+        if hostscript is not None:
+            for script in hostscript.findall("script"):
+                scripts_results.append({
+                    "id": script.get("id"),
+                    "output": script.get("output")
+                })
+
         # 2. Ports & Services
         ports_list = []
         ports_tree = host.find("ports")
@@ -65,6 +74,12 @@ def parse_nmap_xml(xml_text: str) -> List[Dict[str, Any]]:
                 product = service.get("product") if service is not None else None
                 version = service.get("version") if service is not None else None
                 
+                for script in port.findall("script"):
+                    scripts_results.append({
+                        "id": script.get("id"),
+                        "output": script.get("output")
+                    })
+                
                 ports_list.append({
                     "port": port_id,
                     "protocol": protocol,
@@ -80,6 +95,7 @@ def parse_nmap_xml(xml_text: str) -> List[Dict[str, Any]]:
             "hostname": hostname,
             "state": state,
             "os_match": os_list,
-            "ports": ports_list
+            "ports": ports_list,
+            "scripts": scripts_results
         })
     return hosts

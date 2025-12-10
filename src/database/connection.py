@@ -16,7 +16,6 @@ def init_db(conn: sqlite3.Connection) -> None:
         appearings INTEGER DEFAULT 1
     )
     """)
-
     c.execute("""
     CREATE TABLE IF NOT EXISTS known_macs (
         id INTEGER PRIMARY KEY,
@@ -126,5 +125,14 @@ def init_db(conn: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_fingerprint_services_scan ON fingerprint_services(scan_id)
     """)
 
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS fingerprint_scripts(
+        id INTEGER PRIMARY KEY, 
+        device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+        scan_id INTEGER REFERENCES scans(id) ON DELETE CASCADE,
+        script_id TEXT, 
+        output TEXT)
+    """)
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_fingerprint_scripts_device ON fingerprint_scripts(device_id)""")
     conn.commit()
 

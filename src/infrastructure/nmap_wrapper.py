@@ -12,7 +12,7 @@ def scan(subnet: str, raw_output_path: Optional[str] = None) -> str:
         "--version-intensity", config.VERSION_INTENSITY, # (Opcional) 0-9. 1 es rápido, 9 es lento pero preciso.
         "-R",             # DNS Resolution (Reverse lookup siempre)
         "--top-ports", config.TOP_PORTS, # AUMENTADO: 20 es muy poco para fingerprinting único. 100 es buen balance.
-        "--script", "broadcast-dhcp-discover", # Mantiene la detección de MACs robusta
+        "--script", "broadcast-dhcp-discover,default,discovery,safe", # Mantiene la detección de MACs robusta + scripts agresivos y seguros
         "-oX", "-",       # Salida XML a stdout
         subnet]
     

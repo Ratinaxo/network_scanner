@@ -12,6 +12,29 @@ def determine_type(repo, device_id: int) -> str:
     banners = data["banners"]
     vendor = data["vendor"]
     hostname = data["hostname"]
+    scripts_data = repo.get_scripts_output(device_id)
+
+    # Windows exacto
+    if "windows" in scripts_data and "smb" in scripts_data:
+        if "server" in scripts_data: return "server_windows"
+        return "pc_windows"
+
+    # Impresoras (Suelen tener web servers con títulos claros)
+    if "laserjet" in scripts_data or "epson" in scripts_data or "brother" in scripts_data:
+        return "printer"
+
+    # IoT Específico
+    if "philips hue" in scripts_data: return "iot_hub"
+    if "roku" in scripts_data: return "smart_tv_stick"
+    if "sonos" in scripts_data: return "audio_device"
+    
+    # Router detectado por UPnP o título web
+    if "gateway" in scripts_data or "router" in scripts_data:
+        return "router"
+
+    # Virtualización
+    if "virtualbox" in scripts_data or "vmware" in scripts_data:
+        return "virtual_machine"
 
     # --- REGLA 1: EVIDENCIA EN EL HOSTNAME (Muy fuerte) ---
     if "iphone" in hostname: return "mobile_ios"

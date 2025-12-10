@@ -10,7 +10,7 @@ import src.utils as utils
 
 # Capa de Infraestructura
 from src.infrastructure.nmap_wrapper import scan
-from src.infrastructure.parser import parse_nmap_xml
+from src.infrastructure.nmap_parser import parse_nmap_xml
 # Capa de Datos
 from src.database.connection import get_connection, init_db
 from src.database.repository import DeviceRepository
@@ -102,6 +102,7 @@ def main():
             
             # D. Guardar Fingerprints
             repo.save_fingerprints(device_id, scan_id, host)
+            repo.save_scripts_data(device_id, scan_id, host)
             
             # E. Clasificación Automática (Capa de Análisis)
             # Analizamos la data recién guardada para determinar qué es
