@@ -4,66 +4,81 @@ import argparse
 import os
 import datetime
 
-# Módulos de Configuración y Utilidades
+# 1. Importamos config (Esto YA carga .env, calcula rutas y crea carpetas)
 import config
 import src.utils as utils
 
-# Capa de Infraestructura
-from src.infrastructure.nmap_wrapper import scan
-from src.infrastructure.nmap_parser import parse_nmap_xml
-# Capa de Datos
-from src.database.connection import get_connection, init_db
+# Capas del Sistema
+from src.infrastructure.active_scanner import NmapError, NmapScanner
+from src.infrastructure.nmap_parser import parse_xml
+from src.database.connection import DatabaseManager
 from src.database.repository import DeviceRepository
-
-# Capa de Análisis
 from src.analysis import heuristics, classifier
 
 def main():
-    # 1. Configuración de Argumentos y Rutas
+    # 2. Configuración de Argumentos (Solo para overrides opcionales)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", help="Directorio para guardar devices.db")
-    parser.add_argument("--log-dir", help="Directorio para guardar tracker.log")
-    parser.add_argument("--force-subnet", help="Forzar subnet, ej: 192.168.1.0/24")
+    parser.add_argument("--data-dir", help="Sobrescribir directorio de datos")
+    parser.add_argument("--log-dir", help="Sobrescribir directorio de logs")
+    parser.add_argument("--force-subnet", help="Sobrescribir subred a escanear")
     args = parser.parse_args()
     
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.abspath(args.data_dir) if args.data_dir else os.path.join(base_path, "data")
-    log_dir = os.path.abspath(args.log_dir) if args.log_dir else os.path.join(base_path, "logs")
-    scans_dir = os.path.join(base_path, "scans") # Carpeta dedicada a reportes raw
+    # 3. Aplicar Overrides (Si el usuario los pidió por CLI)
+    # Nota: Modificamos las variables de config directamente
+    if args.data_dir:
+        config.DATA_DIR = os.path.abspath(args.data_dir)
+        # Recalculamos la ruta del archivo DB
+        config.DB_PATH = os.path.join(config.DATA_DIR, config.DB_FILENAME)
+        os.makedirs(config.DATA_DIR, exist_ok=True)
 
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(scans_dir, exist_ok=True)
-    
-    # Inyectar configuración global
-    config.DB_PATH = os.path.join(data_dir, config.DB_FILENAME)
-    config.LOG_PATH = os.path.join(log_dir, config.LOG_FILENAME)
-    config.FORCE_SUBNET = args.force_subnet
+    if args.log_dir:
+        config.LOGS_DIR = os.path.abspath(args.log_dir)
+        # Recalculamos la ruta del archivo Log (CORREGIDO)
+        config.SCANNER_LOG_PATH = os.path.join(config.LOGS_DIR, config.SCANNER_LOG_FILENAME)
+        # Nota: SNIFFER_LOG_PATH también se debería actualizar si ambos usan el mismo dir
+        config.SNIFFER_LOG_PATH = os.path.join(config.LOGS_DIR, config.SNIFFER_LOG_FILENAME)
+        os.makedirs(config.LOGS_DIR, exist_ok=True)
 
-    # Nombre del archivo raw para este escaneo
-    timestamp_filename = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    raw_scan_file = os.path.join(scans_dir, f"scan_{timestamp_filename}.txt")
+    if args.force_subnet:
+        config.FORCE_SUBNET = args.force_subnet
 
-    # 2. Detección de Red
+    # 4. Inicialización de la Base de Datos
+    try:
+        db_manager = DatabaseManager(config.DB_PATH)
+        db_manager.initialize_schema()
+    except Exception as e:
+        utils.log(f"CRITICAL DB ERROR: {e}")
+        print(f"Error inicializando DB en {config.DB_PATH}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # 5. Detección de Red
     subnet = config.FORCE_SUBNET or utils.detect_subnet()
     if not subnet:
         utils.log("ERROR: Subred no detectada")
-        print("ERROR: Subred no detectada.", file=sys.stderr)
+        print("ERROR: Subred no detectada. Revisa .env o usa --force-subnet.", file=sys.stderr)
         sys.exit(1)
 
     utils.log(f"Starting scan for subnet {subnet}")
     print(f"Scanning {subnet}...")
     print(f"DB: {config.DB_PATH}")
 
-    # 3. Ejecución de Infraestructura (Nmap + Parser)
-    xml_output = scan(subnet, raw_output_path=raw_scan_file)
-    hosts_data = parse_nmap_xml(xml_output)
+    # 6. Ejecución de Infraestructura
+    timestamp_filename = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Usamos config.SCANS_DIR que ya viene limpio desde config.py
+    raw_scan_file = os.path.join(config.SCANS_DIR, f"scan_{timestamp_filename}.txt")
 
-    # 4. Interacción con Capa de Datos
-    # Usamos 'with' para asegurar que la conexión se cierre aunque haya errores
-    with get_connection(config.DB_PATH) as conn:
-        init_db(conn) # Asegurar tablas
-        repo = DeviceRepository(conn) # Instanciar repositorio
+    try:
+        scanner = NmapScanner()
+        xml_output = scanner.scan(subnet, raw_output_path=raw_scan_file)
+        hosts_data = parse_xml(xml_output)
+    except NmapError as e:
+        utils.log(f"ERROR LAUNCHING NMAP: {e}")
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # 7. Procesamiento y Persistencia
+    with db_manager.get_connection() as conn:
+        repo = DeviceRepository(conn)
 
         scanned_at = utils.now_iso()
         scan_id = repo.create_scan(scanned_at)
@@ -73,18 +88,17 @@ def main():
         count_known = 0
 
         for host in hosts_data:
-            # A. Resolver Identidad (MAC/IP o Heurística)
+            # A. Identidad
             device_id = repo.resolve_device_id(host['mac'], host['ip'])
             
             heuristic_log = ""
             if not device_id and host['ports']:
-                # Llamada a Capa de Análisis
                 device_id = heuristics.match_fingerprint(repo, host['ports'])
                 if device_id:
                     heuristic_log = "(Heuristic Match)"
                     utils.log(f"HEURÍSTICA: {host['ip']} identificado como ID {device_id}")
 
-            # B. Gestión del Dispositivo (Crear o Actualizar)
+            # B. Gestión
             if not device_id:
                 device_id = repo.create_device(host['hostname'], scanned_at)
                 count_new += 1
@@ -92,20 +106,17 @@ def main():
                 repo.update_device(device_id, host['hostname'], scanned_at)
                 count_known += 1
 
-            # C. Registrar Evidencia (IP, MAC, Sighting)
-            if host['ip']:
-                repo.record_ip(host['ip'], device_id, scanned_at)
-            if host['mac']:
-                repo.record_mac(host['mac'], device_id, scanned_at)
+            # C. Evidencia
+            if host['ip']: repo.record_ip(host['ip'], device_id, scanned_at)
+            if host['mac']: repo.record_mac(host['mac'], device_id, scanned_at)
             
             repo.record_sighting(scan_id, device_id, host, scanned_at)
             
-            # D. Guardar Fingerprints
-            repo.save_fingerprints(device_id, scan_id, host)
+            # D. Fingerprints (Activos)
+            repo.save_active_fingerprints(device_id, scan_id, host) 
             repo.save_scripts_data(device_id, scan_id, host)
             
-            # E. Clasificación Automática (Capa de Análisis)
-            # Analizamos la data recién guardada para determinar qué es
+            # E. Clasificación (Usa datos activos + pasivos acumulados)
             new_type = classifier.determine_type(repo, device_id)
             if new_type != "unknown":
                 repo.update_device_type(device_id, new_type)
@@ -113,7 +124,7 @@ def main():
             seen_ids.add(device_id)
             utils.log(f"Processed: {host['ip']} | ID: {device_id} | Type: {new_type} {heuristic_log}")
 
-        # 5. Commit Final y Resumen
+        # 8. Cierre
         conn.commit()
         
         disappeared = repo.get_disappeared_devices(seen_ids, scanned_at)

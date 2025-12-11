@@ -13,7 +13,7 @@ def log(msg: str, log_file: str = None):
     :param msg: El mensaje a escribir.
     :param log_file: Ruta absoluta del archivo log. Si es None, usa el default de config.
     """
-    target_file = log_file if log_file else config.LOG_PATH
+    target_file = log_file if log_file else config.SCANNER_LOG_PATH
     
     if not target_file:
         return

@@ -14,10 +14,14 @@ scans/
 *.txt
 
 # 4. Entornos virtuales
+.venv/
 venv/
+.env/
 env/
+
+# 5. Variables de entorno
 .env
 
-# 5. Archivos extra
+# 6. Archivos extra
 test_network_tracker.py
 audit.py

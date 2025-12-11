@@ -1,103 +1,73 @@
 def determine_type(repo, device_id: int) -> str:
     """
-    Determina el tipo de dispositivo usando un enfoque de 'Embudo de Especificidad'.
-    Orden: Hostname -> Puertos Específicos -> OS Específico -> Vendor -> Genérico.
+    Determina el tipo de dispositivo.
     """
-    
-    # 1. Obtenemos datos limpios desde el Repo
+    # 1. Obtener datos
     data = repo.get_device_details(device_id)
     
-    os_name = data["os"]
+    os_name = data["os"].lower()
     open_ports = data["ports"]
-    banners = data["banners"]
+    # Juntamos todo el texto descriptivo en una sola variable para búsquedas fáciles
+    # (scripts_data ya está incluido en 'banners' si usas el repositorio actualizado, 
+    # pero por si acaso lo traemos explícito si tu repo no lo junta)
+    full_text = (data["banners"] + " " + repo.get_scripts_output(device_id)).lower()
     vendor = data["vendor"]
     hostname = data["hostname"]
-    scripts_data = repo.get_scripts_output(device_id)
-
-    # Windows exacto
-    if "windows" in scripts_data and "smb" in scripts_data:
-        if "server" in scripts_data: return "server_windows"
-        return "pc_windows"
-
-    # Impresoras (Suelen tener web servers con títulos claros)
-    if "laserjet" in scripts_data or "epson" in scripts_data or "brother" in scripts_data:
-        return "printer"
-
-    # IoT Específico
-    if "philips hue" in scripts_data: return "iot_hub"
-    if "roku" in scripts_data: return "smart_tv_stick"
-    if "sonos" in scripts_data: return "audio_device"
-    
-    # Router detectado por UPnP o título web
-    if "gateway" in scripts_data or "router" in scripts_data:
-        return "router"
-
-    # Virtualización
-    if "virtualbox" in scripts_data or "vmware" in scripts_data:
-        return "virtual_machine"
 
     # --- REGLA 1: EVIDENCIA EN EL HOSTNAME (Muy fuerte) ---
     if "iphone" in hostname: return "mobile_ios"
     if "ipad" in hostname: return "tablet_ios"
+    if "macbook" in hostname or "imac" in hostname: return "mac_computer"
     if "android" in hostname: return "android_device"
     if "tv" in hostname or "bravia" in hostname: return "smart_tv"
-    if "ps5" in hostname or "xbox" in hostname: return "gaming_console"
-    if "printer" in hostname: return "printer"
-
-    # --- REGLA 2: SERVICIOS INEQUÍVOCOS (Puertos y Banners) ---
-    # Impresoras
-    if 9100 in open_ports or 631 in open_ports or "jetdirect" in banners:
-        return "printer"
     
-    # IoT / Streaming (Antes que Linux genérico)
-    if "castv2" in banners or "chromecast" in banners or 8009 in open_ports:
-        return "smart_tv_stick"
-    if "alexa" in banners or "sonos" in banners:
-        return "audio_device"
-    if "homepod" in banners or "airplay" in banners:
-        return "audio_device"
-    
-    # NAS (Storage)
-    if "synology" in banners or "qnap" in banners or 548 in open_ports:
-        return "nas"
-
-    # --- REGLA 3: INFRAESTRUCTURA DE RED ---
-    # Routers (Regla mejorada)
-    # Si tiene DNS (53) y Web (80/443), es router.
-    if 53 in open_ports and (80 in open_ports or 443 in open_ports):
-        return "router"
-    if "openwrt" in os_name or "pfsense" in os_name:
-        return "router"
-    if "wap" in os_name:
-        return "access_point"
-
-    # --- REGLA 4: SISTEMAS OPERATIVOS (De específico a general) ---
+    # --- REGLA 2: EVIDENCIA DE SCRIPTS/BANNERS ---
     # Windows
-    if "windows" in os_name:
-        if "server" in os_name or 389 in open_ports: # LDAP port
-            return "server_windows"
+    if "windows" in full_text and "smb" in full_text:
+        if "server" in full_text: return "server_windows"
         return "pc_windows"
-    
-    # Apple (No iOS)
-    if "macos" in os_name or "osx" in os_name or "macbook" in hostname:
-        return "mac_computer"
-    
-    # Móviles (Si Nmap detectó el OS)
-    if "ios" in os_name: return "mobile_ios"
-    if "android" in os_name: return "android_device" # Tablets/Phones
 
-    # Linux Genérico (El "basurero" de categorías)
+    # Impresoras
+    if "laserjet" in full_text or "epson" in full_text or 9100 in open_ports:
+        return "printer"
+
+    # IoT
+    if "hue" in full_text: return "iot_hub"
+    if "roku" in full_text or "chromecast" in full_text or 8009 in open_ports:
+        return "smart_tv_stick"
+    if "sonos" in full_text: return "audio_device"
+    
+    # Routers
+    if "gateway" in full_text or "router" in full_text: return "router"
+    if 53 in open_ports and (80 in open_ports or 443 in open_ports): return "router"
+
+    # --- REGLA 3: SISTEMAS OPERATIVOS (Refinada) ---
+    
+    # APPLE (La parte difícil)
+    if "macos" in os_name or "osx" in os_name or "ios" in os_name or "darwin" in os_name:
+        # ¿Tiene puertos de escritorio?
+        # 22 (SSH), 445 (SMB), 548 (AFP), 5900 (VNC), 3283 (Remote Desktop)
+        if any(p in open_ports for p in [22, 445, 548, 5900, 3283]):
+            return "mac_computer"
+        
+        # Si no tiene puertos de "trabajo", asumimos móvil/genérico
+        return "apple_device"
+
+    # Windows
+    if "windows" in os_name: return "pc_windows"
+    
+    # Móviles
+    if "android" in os_name: return "android_device"
+
+    # Linux Genérico
     if "linux" in os_name:
-        # Intentamos refinar Linux
-        if 22 in open_ports and 80 in open_ports: return "server_linux"
-        if 22 in open_ports: return "linux_device" # Probablemente un server o RPi
-        return "linux_device" # Default Linux
+        if 22 in open_ports: return "linux_device" # Probable server/rpi
+        return "linux_device" 
 
-    # --- REGLA 5: VENDOR (Último recurso) ---
+    # --- REGLA 4: VENDOR ---
     if "apple" in vendor: return "apple_device"
     if "espressif" in vendor: return "esp_iot"
     if "raspberry" in vendor: return "raspberry_pi"
     if "nintendo" in vendor: return "gaming_console"
-    if "samsung" in vendor or "lg" in vendor: return "smart_device"
 
     return "unknown"
