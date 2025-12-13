@@ -1,6 +1,6 @@
 import sqlite3
 from typing import Optional, List, Tuple, Dict
-import src.utils as utils
+import src.utils.utils as utils
 
 class DeviceRepository:
     def __init__(self, conn: sqlite3.Connection):
@@ -31,18 +31,87 @@ class DeviceRepository:
         """, (hostname, scanned_at, scanned_at))
         return self.cursor.lastrowid
 
-    def update_device(self, device_id: int, hostname: str, scanned_at: str):
+    def update_device(self, device_id: int, new_hostname: str, scanned_at: str):
+        # 1. Obtener el hostname actual de la DB
+        self.cursor.execute("SELECT hostname FROM devices WHERE id = ?", (device_id,))
+        row = self.cursor.fetchone()
+        current_hostname = row[0] if row else None
+
+        # 2. Función de Calidad de Nombre
+        def is_valid_name(name):
+            if not name: return False
+            name = name.lower()
+            if "unknown" in name or name == "localhost": return False
+            # Verifica si parece una IP (muy básico)
+            if name.replace('.', '').isdigit(): return False 
+            return True
+
+        # 3. Decidir cuál nombre guardar
+        final_hostname = current_hostname # Por defecto nos quedamos con el viejo
+
+        if is_valid_name(new_hostname):
+            if not is_valid_name(current_hostname):
+                # Si el viejo era malo y el nuevo es bueno, cambiamos
+                final_hostname = new_hostname
+            else:
+                # Conflicto: Ambos parecen válidos.
+                # Preferimos nombres "humanos" (con guiones, espacios) sobre generados
+                if "-" in new_hostname or " " in new_hostname:
+                    final_hostname = new_hostname
+                elif len(new_hostname) > len(current_hostname):
+                     # Heurística simple: el nombre más largo suele ser más descriptivo
+                     final_hostname = new_hostname
+
+        # 4. Ejecutar Update
         self.cursor.execute("""
             UPDATE devices
-            SET hostname = COALESCE(?, hostname),
+            SET hostname = ?,
                 last_seen = ?,
                 appearings = appearings + 1
             WHERE id = ?
-        """, (hostname, scanned_at, device_id))
+        """, (final_hostname, scanned_at, device_id))
 
-    def update_device_type(self, device_id: int, device_type: str):
-        self.cursor.execute("UPDATE devices SET type = ? WHERE id = ?", (device_type, device_id))
+    def update_device_type(self, device_id: int, device_type: str, confidence: int):
+        self.cursor.execute("UPDATE devices SET type = ?, confidence = ? WHERE id = ?", (device_type, confidence, device_id))
 
+    def update_hostname_if_better(self, device_id: int, new_hostname: str):
+        """
+        Actualiza el hostname solo si el nuevo es mejor o más específico.
+        Prioriza nombres detectados por DHCP pasivo.
+        """
+        if not new_hostname: return
+
+        self.cursor.execute("SELECT hostname FROM devices WHERE id = ?", (device_id,))
+        row = self.cursor.fetchone()
+        current = row[0] if row else "unknown"
+        
+        # Limpieza
+        current = (current or "unknown").lower()
+        new_name = new_hostname.strip()
+        
+        should_update = False
+        
+        # 1. Si no tenemos nombre, tomamos cualquiera
+        if current == "unknown" or current == "":
+            should_update = True
+        # 2. Si el actual es una IP (malo) y el nuevo no
+        elif current.replace('.', '').isdigit() and not new_name.replace('.', '').isdigit():
+            should_update = True
+        # 3. Preferencia por nombres "Humanos" (con guiones o letras)
+        elif "android" in new_name.lower() or "desktop" in new_name.lower() or "iphone" in new_name.lower():
+            # Si el actual es generico, actualizamos
+            if "unknown" in current or current == new_name:
+                should_update = True
+            # Si el nuevo es más largo/descriptivo (heurística simple)
+            elif len(new_name) > len(current):
+                should_update = True
+
+        if should_update:
+            # Usamos utils.now_iso() si tienes importado utils, o datetime directo
+            # Asumiremos que el campo last_seen se actualiza también para reflejar actividad
+            now = utils.now_iso()
+            self.cursor.execute("UPDATE devices SET hostname = ?, last_seen = ? WHERE id = ?", (new_name, now, device_id))
+            self.conn.commit()
     # --- TRACKING (IPs, MACs, Sightings) ---
 
     def record_ip(self, ip: str, device_id: int, scanned_at: str):
@@ -189,8 +258,57 @@ class DeviceRepository:
         last_scan_id = last_scan_row[0]
         self.cursor.execute("SELECT port, prot FROM fingerprint_ports WHERE device_id = ? AND scan_id = ?", (device_id, last_scan_id))
         return self.cursor.fetchall()
+
+    def get_active_ips(self, minutes=60) -> List[str]:
+        """
+        Retorna una lista de IPs únicas vistas en los últimos X minutos.
+        Usado para focalizar el escaneo profundo.
+        """
+        # SQLite modifier para tiempo: '-60 minutes'
+        time_modifier = f"-{minutes} minutes"
         
+        self.cursor.execute("""
+            SELECT DISTINCT ip 
+            FROM known_ips 
+            WHERE last_seen > datetime('now', ?)
+        """, (time_modifier,))
+        
+        return [row[0] for row in self.cursor.fetchall()]
+
     def get_disappeared_devices(self, current_seen_ids: set, scanned_at: str) -> List[int]:
         self.cursor.execute("SELECT id, last_seen FROM devices")
         all_devs = self.cursor.fetchall()
         return [d[0] for d in all_devs if d[0] not in current_seen_ids and d[1] < scanned_at]
+    
+    # -- Para visualización en web -- #
+    def get_dashboard_data(self) -> List[Dict]:
+        """Obtiene la última foto de cada dispositivo."""
+        query = """
+        SELECT 
+            d.id, d.hostname, d.type, d.last_seen, d.first_seen, d.confidence, d.last_deep_scan,
+            (SELECT ip FROM known_ips WHERE device_id = d.id ORDER BY last_seen DESC LIMIT 1) as ip,
+            (SELECT mac FROM known_macs WHERE device_id = d.id ORDER BY last_seen DESC LIMIT 1) as mac,
+            (SELECT vendor FROM sightings WHERE device_id = d.id ORDER BY scanned_at DESC LIMIT 1) as vendor
+        FROM devices d
+        ORDER BY 
+            CASE WHEN d.last_seen > datetime('now', '-20 minutes') THEN 0 ELSE 1 END, 
+            d.last_seen DESC
+        """
+        # Nota: El ORDER BY pone primero a los online
+        
+        self.cursor.execute(query)
+        cols = [column[0] for column in self.cursor.description]
+        return [dict(zip(cols, row)) for row in self.cursor.fetchall()]
+    
+    def get_last_scan_time(self) -> Optional[str]:
+        """Retorna la fecha del último escaneo exitoso."""
+        self.cursor.execute("SELECT scanned_at FROM scans ORDER BY id DESC LIMIT 1")
+        row = self.cursor.fetchone()
+        if row:
+            # Limpiamos la fecha para que se vea bonita (quitamos microsegundos si los hay)
+            return row[0].split(".")[0].replace("T", " ")
+        return "Nunca"
+    
+    def mark_deep_scan(self, device_id: int, scanned_at: str):
+        """Actualiza la fecha del último escaneo profundo."""
+        self.cursor.execute("UPDATE devices SET last_deep_scan = ? WHERE id = ?", (scanned_at, device_id))

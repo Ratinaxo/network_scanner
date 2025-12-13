@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 import subprocess
-import sys
 import shutil
 from typing import Optional, List
 import config
@@ -17,52 +16,59 @@ class NmapScanner:
         if not shutil.which("nmap"):
             raise NmapError("El ejecutable 'nmap' no se encuentra en el PATH del sistema.")
 
-    def scan(self, subnet: str, raw_output_path: Optional[str] = None) -> str:
+    def scan(self, target, raw_output_path: Optional[str] = None, mode: str = "fast") -> str:
         """
-        Ejecuta el escaneo y retorna el XML raw.
-        Lanza NmapError si algo falla.
+        Ejecuta el escaneo.
+        :param target: Puede ser un string ("192.168.1.0/24") o una lista de IPs ["1.1.1.1", "1.2.3.4"]
         """
-        cmd = self._build_command(subnet, raw_output_path)
+        cmd = self._build_command(target, raw_output_path, mode)
         
         try:
-            # capture_output=True es el equivalente moderno de stdout=PIPE, stderr=PIPE
             process = subprocess.run(cmd, capture_output=True, text=True)
-
             if process.returncode != 0:
-                # No matamos el programa, lanzamos el error hacia arriba
-                raise NmapError(f"Nmap falló (Exit Code {process.returncode}): {process.stderr.strip()}")
-
+                raise NmapError(f"Nmap falló (Code {process.returncode}): {process.stderr.strip()}")
             return process.stdout
-
         except OSError as e:
-            raise NmapError(f"Error del Sistema al ejecutar nmap: {e}")
+            raise NmapError(f"Error del Sistema: {e}")
+    
+    def _build_command(self, target, output_path: Optional[str], mode: str) -> List[str]:
+        # Base común
+        cmd = ["nmap", "-O", "-sS", "-sV", "-R"]
+        
+        if mode == "deep":
+            # --- MODO AGRESIVO FOCALIZADO ---
+            # Idealmente 'target' aquí es una lista de IPs específicas
+            cmd.extend([
+                "--version-intensity", "6",    # Máxima intensidad
+                "--top-ports", "1000",         # Compromiso bueno (cubre DBs, Juegos, IoT raro)
+                "--script", "discovery,safe",  # Scripts profundos
+                "--script-args", "http-spider-maxpagecount=10",
+                "-T4",                         # Timing agresivo (porque son pocas IPs)
+                "--max-retries", "2",
+                "--open"                       # Solo nos interesan puertos abiertos en el reporte
+            ])
+        else:
+            # --- MODO RÁPIDO (BARRIDO) ---
+            cmd.extend([
+                "--version-intensity", "2",
+                f"--top-ports", str(config.TOP_PORTS),
+                "--max-retries", "1",
+                "--host-timeout", "2m",
+                "--script", "broadcast-dhcp-discover,smb-os-discovery,dns-service-discovery,http-title,ssl-cert,upnp-info",
+                "--script-timeout", "10s"
+            ])
 
-    def _build_command(self, subnet: str, output_path: Optional[str]) -> List[str]:
-        """Construye la lista de argumentos para Nmap."""
-        cmd = [
-            "nmap", 
-            "-O",             
-            "-sS",            
-            "-sV",            
-            # Bajamos intensidad a 2 (suficiente para banners)
-            f"--version-intensity", "2", 
-            "-R",             
-            f"--top-ports", str(config.TOP_PORTS),
-            
-            # --- OPTIMIZACIÓN CRÍTICA ---
-            "--max-retries", "1",        # No insistir si falla
-            "--host-timeout", "2m",      # Timeout por host
-            "--min-rate", "100",         # Velocidad mínima
-            
-            # SCRIPTS QUIRÚRGICOS (Sin 'default' ni 'discovery')
-            "--script", "broadcast-dhcp-discover,smb-os-discovery,dns-service-discovery,http-title,ssl-cert,upnp-info",
-            "--script-timeout", "10s",   # Matar scripts lentos
-            
-            "-oX", "-"
-        ]
-
+        cmd.extend(["-oX", "-"])
+        
         if output_path:
             cmd.extend(["-oN", output_path])
         
-        cmd.append(subnet)
+        # LÓGICA HÍBRIDA: Lista o String
+        if isinstance(target, list):
+            # Si es lista, agregamos cada IP como un argumento separado
+            cmd.extend(target)
+        else:
+            # Si es string (subnet), lo agregamos directo
+            cmd.append(target)
+            
         return cmd

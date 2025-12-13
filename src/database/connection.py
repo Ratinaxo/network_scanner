@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from contextlib import contextmanager
 
 class DatabaseManager:
     def __init__(self, db_path: str):
@@ -9,17 +10,20 @@ class DatabaseManager:
         """
         self.db_path = db_path
 
-    def get_connection(self) -> sqlite3.Connection:
-        """
-        Crea y devuelve una nueva conexión a la base de datos.
-        Se debe usar preferiblemente con 'with' para asegurar el cierre.
-        """
-        # Aseguramos que el directorio exista
+    @contextmanager
+    def get_connection(self):
+        # Aseguramos directorios
         db_dir = os.path.dirname(self.db_path)
-        if db_dir:
-            os.makedirs(db_dir, exist_ok=True)
+        if db_dir: os.makedirs(db_dir, exist_ok=True)
             
-        return sqlite3.connect(self.db_path, timeout=20)
+        conn = sqlite3.connect(self.db_path, timeout=20, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def initialize_schema(self) -> None:
         """
@@ -56,8 +60,10 @@ class DatabaseManager:
                 hostname TEXT,
                 first_seen TEXT,
                 last_seen TEXT,
+                last_deep_scan TEXT,
                 appearings INTEGER DEFAULT 1,
-                type TEXT DEFAULT 'unknown'
+                type TEXT DEFAULT 'unknown',
+                confidence INTEGER DEFAULT 0
             )
             """)
             # Índices Core
